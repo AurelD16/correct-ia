@@ -1,0 +1,21 @@
+# Dépendances
+node_modules/
+
+# Build
+.next/
+out/
+next-env.d.ts
+*.tsbuildinfo
+
+# Environnement — ne jamais commiter de secrets
+.env
+.env.local
+.env.*.local
+
+# Tests
+coverage/
+
+# OS / éditeurs
+.DS_Store
+Thumbs.db
+*.log
