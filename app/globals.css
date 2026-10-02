@@ -1,0 +1,45 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: light;
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  @apply bg-slate-100 text-slate-900 antialiased;
+}
+
+/* Focus visible partout : exigence d'accessibilité. */
+:where(a, button, textarea, [tabindex]):focus-visible {
+  @apply outline-none ring-2 ring-sky-600 ring-offset-2 ring-offset-slate-100;
+}
+
+/* Barre de défilement discrète dans les panneaux. */
+.scroll-area {
+  scrollbar-width: thin;
+  scrollbar-color: theme('colors.slate.400') transparent;
+}
+
+.scroll-area::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+.scroll-area::-webkit-scrollbar-thumb {
+  @apply rounded-full bg-slate-400;
+}
+
+.scroll-area::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+mark[data-segment='true'] {
+  @apply cursor-pointer rounded-sm px-0.5;
+  scroll-margin: 6rem;
+}
