@@ -1,9 +1,18 @@
 import { z } from 'zod';
 
 /**
+ * Valeur de repli de `LLM_MAX_INPUT_CHARS`, source unique du défaut : utilisée par
+ * le schéma, par `getMaxInputChars` et donc par l'interface comme par l'API.
+ */
+export const DEFAULT_MAX_INPUT_CHARS = 8_000;
+
+/**
  * Configuration LLM. Volontairement **sans** `NEXT_PUBLIC_` : ce module est
  * importé uniquement par le code serveur (route handler), jamais par un composant
  * client, pour que la clé d'API ne puisse pas atterrir dans le bundle navigateur.
+ *
+ * Les accesseurs `getDefaultLanguage` et `getMaxInputChars` renvoient uniquement
+ * des valeurs non sensibles : la page serveur s'en sert pour composer l'interface.
  */
 const envSchema = z.object({
   LLM_BASE_URL: z.string().min(1),
@@ -12,7 +21,7 @@ const envSchema = z.object({
   LLM_LANGUAGE: z.string().min(1).default('fr'),
   LLM_TEMPERATURE: z.coerce.number().min(0).max(2).default(0),
   LLM_TIMEOUT_MS: z.coerce.number().int().positive().default(60_000),
-  LLM_MAX_INPUT_CHARS: z.coerce.number().int().positive().default(8_000),
+  LLM_MAX_INPUT_CHARS: z.coerce.number().int().positive().default(DEFAULT_MAX_INPUT_CHARS),
   LLM_STRUCTURED_OUTPUT: booleanFlag(true),
   LOG_TEXT: booleanFlag(false),
 });
@@ -85,4 +94,15 @@ export function getLlmConfig(source: EnvSource = process.env): LlmConfig {
 export function getDefaultLanguage(source: EnvSource = process.env): string {
   const parsed = envSchema.shape.LLM_LANGUAGE.safeParse(source.LLM_LANGUAGE);
   return parsed.success ? parsed.data : 'fr';
+}
+
+/**
+ * Limite de saisie annoncée à l'interface (compteur, alerte à 80 %, blocage de la
+ * soumission). Tolère une configuration absente ou invalide : le repli évite de
+ * faire échouer le rendu de la page alors que la route API, seule à appliquer la
+ * limite, refusera de toute façon ce qu'elle n'accepte pas.
+ */
+export function getMaxInputChars(source: EnvSource = process.env): number {
+  const parsed = envSchema.shape.LLM_MAX_INPUT_CHARS.safeParse(source.LLM_MAX_INPUT_CHARS);
+  return parsed.success ? parsed.data : DEFAULT_MAX_INPUT_CHARS;
 }

@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { EnvError, getDefaultLanguage, getLlmConfig } from './env';
+import {
+  DEFAULT_MAX_INPUT_CHARS,
+  EnvError,
+  getDefaultLanguage,
+  getLlmConfig,
+  getMaxInputChars,
+} from './env';
 
 const COMPLETE = {
   LLM_BASE_URL: 'https://api.example.test/v1/',
@@ -72,5 +78,37 @@ describe('getDefaultLanguage', () => {
 
   it('utilise la langue configurée', () => {
     expect(getDefaultLanguage({ LLM_LANGUAGE: 'en' })).toBe('en');
+  });
+});
+
+describe('getMaxInputChars', () => {
+  it('retombe sur le défaut si la configuration est absente', () => {
+    expect(getMaxInputChars({})).toBe(DEFAULT_MAX_INPUT_CHARS);
+  });
+
+  it('reflète une valeur personnalisée supérieure au défaut', () => {
+    expect(getMaxInputChars({ LLM_MAX_INPUT_CHARS: '20000' })).toBe(20_000);
+  });
+
+  it('reflète une valeur personnalisée inférieure au défaut', () => {
+    expect(getMaxInputChars({ LLM_MAX_INPUT_CHARS: '500' })).toBe(500);
+  });
+
+  it('retombe sur le défaut si la valeur est invalide', () => {
+    expect(getMaxInputChars({ LLM_MAX_INPUT_CHARS: 'bientôt' })).toBe(DEFAULT_MAX_INPUT_CHARS);
+    expect(getMaxInputChars({ LLM_MAX_INPUT_CHARS: '0' })).toBe(DEFAULT_MAX_INPUT_CHARS);
+    expect(getMaxInputChars({ LLM_MAX_INPUT_CHARS: '-5' })).toBe(DEFAULT_MAX_INPUT_CHARS);
+    expect(getMaxInputChars({ LLM_MAX_INPUT_CHARS: '12.5' })).toBe(DEFAULT_MAX_INPUT_CHARS);
+  });
+
+  it('tolère une configuration par ailleurs inexploitable', () => {
+    // La page doit pouvoir rendre même sans clé d'API : seule la limite compte ici.
+    expect(getMaxInputChars({ LLM_MAX_INPUT_CHARS: '3000' })).toBe(3000);
+  });
+
+  it('utilise la même valeur que celle appliquée par l’API', () => {
+    const source = { ...COMPLETE, LLM_MAX_INPUT_CHARS: '1234' };
+
+    expect(getMaxInputChars(source)).toBe(getLlmConfig(source).maxInputChars);
   });
 });

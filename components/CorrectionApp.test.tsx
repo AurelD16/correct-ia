@@ -1,4 +1,4 @@
-import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import CorrectionApp from './CorrectionApp';
@@ -254,6 +254,38 @@ describe('CorrectionApp — saisie', () => {
     expect(screen.getByText(/\/ 20 caractères/)).toBeInTheDocument();
     expect(textarea).toHaveAttribute('aria-invalid', 'true');
     expect(screen.getByRole('button', { name: 'Corriger le texte' })).toBeDisabled();
+  });
+
+  it('applique la limite configurée, y compris supérieure au défaut', () => {
+    const long = 'a '.repeat(4500); // 9000 caractères
+    const { unmount } = render(<CorrectionApp defaultLanguage="fr" maxInputChars={20_000} />);
+
+    fireEvent.change(getTextarea(), { target: { value: long } });
+
+    expect(screen.getByText(/9000 \/ 20000 caractères/)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Corriger le texte' })).toBeEnabled();
+    unmount();
+
+    // Même saisie, limite par défaut : refusée.
+    render(<CorrectionApp defaultLanguage="fr" maxInputChars={8000} />);
+    fireEvent.change(getTextarea(), { target: { value: long } });
+
+    expect(screen.getByText(/9000 \/ 8000 caractères/)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Corriger le texte' })).toBeDisabled();
+  });
+
+  it('déclenche une correction au-delà de 8000 caractères si la limite le permet', async () => {
+    const long = 'a '.repeat(4500); // 9000 caractères
+    const fetchSpy = vi.fn(async () => new Response(JSON.stringify(RESULT), { status: 200 }));
+    vi.stubGlobal('fetch', fetchSpy);
+    render(<CorrectionApp defaultLanguage="fr" maxInputChars={20_000} />);
+
+    fireEvent.change(getTextarea(), { target: { value: long } });
+    await userEvent.setup().click(screen.getByRole('button', { name: 'Corriger le texte' }));
+
+    await waitFor(() => expect(fetchSpy).toHaveBeenCalledTimes(1));
+    const init = (fetchSpy.mock.calls[0] as unknown as [string, RequestInit])[1];
+    expect((JSON.parse(init.body as string) as { text: string }).text).toHaveLength(9000);
   });
 
   it("n'envoie jamais la configuration du LLM dans la requête", async () => {

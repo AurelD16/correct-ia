@@ -1,10 +1,15 @@
-import { getDefaultLanguage } from '@/lib/env';
+import { getDefaultLanguage, getMaxInputChars } from '@/lib/env';
 import CorrectionApp from '@/components/CorrectionApp';
-import { MAX_INPUT_CHARS_FALLBACK } from '@/components/textLimits';
 
 // La page est un composant serveur : elle lit la configuration et la transmet en
-// props. Aucune variable d'environnement n'NEXT_PUBLIC_ n'est utilisée, donc rien
-// de ce qui touche au LLM n'atteint le bundle navigateur.
+// props. Seules la langue et la limite de saisie sont exposées au client, ni l'une
+// ni l'autre n'est un secret ; aucune variable d'environnement n'est préfixée par
+// `NEXT_PUBLIC_`, donc rien de ce qui touche au LLM n'atteint le bundle navigateur.
+//
+// Rendue à la requête plutôt qu'à la compilation : la limite affichée suit l'env
+// d'exécution, y compris quand il est injecté au démarrage du conteneur.
+export const dynamic = 'force-dynamic';
+
 export default function Page() {
   return (
     <main className="mx-auto flex min-h-screen w-full max-w-[110rem] flex-col gap-6 p-4 sm:p-6 lg:p-8">
@@ -19,7 +24,7 @@ export default function Page() {
       </header>
       <CorrectionApp
         defaultLanguage={getDefaultLanguage()}
-        maxInputChars={MAX_INPUT_CHARS_FALLBACK}
+        maxInputChars={getMaxInputChars()}
       />
     </main>
   );

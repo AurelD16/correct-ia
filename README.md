@@ -44,7 +44,7 @@ Toutes les variables sont lues **côté serveur** (`lib/env.ts`). Aucune n'est p
 | `LLM_LANGUAGE` | `fr` | Langue de travail du correcteur et langue par défaut de l'interface. |
 | `LLM_TEMPERATURE` | `0` | Température de génération, entre 0 et 2. |
 | `LLM_TIMEOUT_MS` | `60000` | Délai maximal d'attente du fournisseur. |
-| `LLM_MAX_INPUT_CHARS` | `8000` | Longueur maximale acceptée. Au-delà : refus `400`, jamais de troncature. |
+| `LLM_MAX_INPUT_CHARS` | `8000` | Longueur maximale acceptée. Au-delà : refus `400`, jamais de troncature. La valeur est lue côté serveur et transmise à l'interface, qui compte les caractères, alerte à 80 % et bloque la soumission au-dessus de cette limite. |
 | `LLM_STRUCTURED_OUTPUT` | `true` | `true` → `response_format: json_schema` strict ; `false` → `json_object`. |
 | `LOG_TEXT` | `false` | Journalise le texte utilisateur. À laisser à `false` hors développement. |
 
@@ -133,7 +133,7 @@ que le serveur n'a pas pu localiser dans le texte source ; elles s'affichent dan
 ## Tests et vérifications
 
 ```bash
-npm test        # 94 tests, aucune clé d'API requise
+npm test        # 104 tests, aucune clé d'API requise
 npm run lint
 npm run typecheck
 npm run build
