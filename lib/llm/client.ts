@@ -305,10 +305,16 @@ const REDACTION = '[clé masquée]';
  * `Bearer\s+\S+` s'arrêterait à `[clé` et laisserait un ` masquée]` résiduel —
  * `Bearer [clé masquée] masquée]`. Masquer d'abord la clé exacte, puis retaille par
  * le motif générique, produit exactement cette casse.
+ *
+ * Le remplacement exact s'applique quelle que soit la longueur de la clé : une clé
+ * courte reste un secret, et un amont bavard qui la rappelle la renverrait en clair.
+ * Seule la chaîne vide est écartée, car `replaceAll('')` insérerait le masque entre
+ * chaque caractère. `getLlmConfig` refusant de toute façon une clé vide, cette garde
+ * n'est qu'une défense.
  */
 function redact(value: string, apiKey: string): string {
   const generic = redactGeneric(value);
-  return apiKey.length >= 8 ? generic.replaceAll(apiKey, REDACTION) : generic;
+  return apiKey === '' ? generic : generic.replaceAll(apiKey, REDACTION);
 }
 
 function redactGeneric(value: string): string {

@@ -384,6 +384,49 @@ describe('callLlm — assainissement des messages', () => {
     expect(error.message).not.toContain('abcdef0123456789abcdef');
     expect(error.message).not.toContain('] masquée]');
   });
+
+  it('masque une clé courte, sans seuil de longueur', async () => {
+    // Une clé mal configurée reste un secret : si l'hôte la rappelle, elle ne doit
+    // pas revenir au client en clair, quelle que soit sa longueur.
+    const shortKey = 'abc';
+    fetchMock.mockResolvedValueOnce(errorResponse(400, 'bad key: abc'));
+
+    const error = (await callLlm({ text: 'texte', config: config({ LLM_API_KEY: shortKey }) }).catch(
+      (e: unknown) => e,
+    )) as Error;
+
+    expect(error.message).not.toContain(shortKey);
+    expect(error.message).toContain('[clé masquée]');
+  });
+
+  it('masque une clé d’un seul caractère', async () => {
+    fetchMock.mockResolvedValueOnce(errorResponse(500, 'rejected key x here'));
+
+    const error = (await callLlm({ text: 'texte', config: config({ LLM_API_KEY: 'x' }) }).catch(
+      (e: unknown) => e,
+    )) as Error;
+
+    // « x » est partout dans le message ; ce qui compte est que la forme d'origine
+    // autour de la clé ne subsiste pas.
+    expect(error.message).toContain('rejected key');
+    expect(error.message).not.toContain('key x here');
+  });
+
+  it('ne casse pas le message quand la clé configurée est vide', async () => {
+    // `getLlmConfig` refuse une clé vide : cette branche de `redact` est une pure
+    // défense. On l'atteint en forçant la configuration, pour vérifier que le
+    // message n'est pas haché de bout en bout (`replaceAll('')` insérerait le
+    // masque entre chaque caractère).
+    fetchMock.mockResolvedValueOnce(errorResponse(500, 'upstream error, 1234'));
+
+    const error = (await callLlm({
+      text: 'texte',
+      config: { ...config(), apiKey: '' },
+    }).catch((e: unknown) => e)) as Error;
+
+    expect(error.message).toContain('upstream error, 1234');
+    expect(error.message).not.toContain('[clé masquée]');
+  });
 });
 
 describe('callLlm — erreurs amont assainies', () => {

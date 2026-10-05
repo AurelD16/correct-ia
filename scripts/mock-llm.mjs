@@ -1,8 +1,15 @@
 #!/usr/bin/env node
 /**
  * Faux serveur OpenAI-compatible pour valider l'application de bout en bout sans
- * clé d'API. Écoute sur :8787 et répond un chat-completions contenant trois erreurs
- * fixes, calculées à partir du texte reçu (donc réellement alignables).
+ * clé d'API. Écoute sur :8787 et répond un chat-completions contenant quatre
+ * corrections fixes, calculées à partir du texte reçu (donc réellement
+ * alignables). Sur le texte d'exemple de l'application, il en trouve les quatre.
+ *
+ * Les extraits sont des **groupes de mots**, jamais un mot seul : un extrait
+ * mono-caractère comme « a » est ambigu — il correspond à la fois au « a » de
+ * « demain a » et à celui de « aura » — et l'alignement, qui prend la première
+ * occurrence à frontière de mot, le placerait à tort. Un groupe de mots rend la
+ * position non ambiguë.
  *
  *   npm run mock:llm
  *   LLM_BASE_URL=http://localhost:8787/v1 LLM_API_KEY=mock LLM_MODEL=mock-1 npm run dev
@@ -13,12 +20,39 @@ import { createServer } from 'node:http';
 const PORT = Number(process.env.MOCK_LLM_PORT ?? 8787);
 const MODEL = process.env.MOCK_LLM_MODEL ?? 'mock-1';
 
-/** [faute, correction, catégorie, sévérité, explication] — fautes sans accent. */
+/**
+ * Groupes de mots à corriger, sans accent dans la forme fautive. Si un groupe
+ * n'apparaît pas dans le texte soumis, aucune erreur n'est émise pour lui.
+ */
 const FIXTURES = [
-  ['a', 'à', 'orthographe', 'erreur', 'La préposition « à » se met ici.'],
-  ['heur', 'heures', 'orthographe', 'erreur', 'Le pluriel de « heure » est obligatoire ici.'],
-  ['etre', 'été', 'orthographe', 'erreur', 'Participe passé de « être », avec accent.'],
-  ['malgres', 'malgré', 'orthographe', 'erreur', '« malgré » prend un accent grave.'],
+  [
+    'demain a 14 heur',
+    'demain à 14 heures',
+    'orthographe',
+    'erreur',
+    '« à » prend un accent, et « heure » est au pluriel après 14.',
+  ],
+  [
+    'a faire',
+    'à faire',
+    'orthographe',
+    'erreur',
+    'La préposition « à » se met ici.',
+  ],
+  [
+    'doit etre fini',
+    'doit être fini',
+    'orthographe',
+    'erreur',
+    'Participe passé de « être », avec accent.',
+  ],
+  [
+    'malgres le retard',
+    'Malgré le retard',
+    'orthographe',
+    'erreur',
+    '« malgré » prend un accent grave, et la majuscule ouvre la phrase.',
+  ],
 ];
 
 function extractText(body) {

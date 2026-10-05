@@ -77,12 +77,19 @@ LLM_BASE_URL=http://localhost:8787/v1 LLM_API_KEY=mock LLM_MODEL=mock-1 npm run 
 ```
 
 `scripts/mock-llm.mjs` expose un endpoint `chat/completions` compatible OpenAI sur le port
-`8787`. Il détecte quatre fautes sans accent — `a` → `à`, `heur` → `heures`,
-`etre` → `été`, `malgres` → `malgré` — **à la frontière d'un mot**, et ne renvoie que
-celles qu'il trouve réellement dans le texte soumis. Sur le texte d'exemple de
-l'application, il en trouve trois. C'est un harnais de test, pas un correcteur : sur un
-texte courant il produit un nombre variable d'erreurs. Il permet de valider l'interface
-de bout en bout sans fournisseur.
+`8787`. Il repère quatre **groupes de mots** fautifs — `demain a 14 heur` →
+`demain à 14 heures`, `a faire` → `à faire`, `doit etre fini` → `doit être fini`,
+`malgres le retard` → `Malgré le retard` — par une recherche insensible aux accents et
+strictement à la frontière d'un mot, et ne renvoie que ceux qu'il trouve réellement dans
+le texte soumis. **Sur le texte d'exemple de l'application, il en trouve les quatre.**
+
+Les extraits sont volontairement des groupes de mots et non des mots isolés : un extrait
+mono-caractère comme `a` est ambigu — il correspond au `a` de `demain a` comme à celui de
+`aura` — et l'alignement, qui retient la première occurrence à frontière de mot, le
+placerait à tort. Un groupe de mots rend la position non ambiguë.
+
+C'est un harnais de test, pas un correcteur : sur un texte courant il produit un nombre
+variable d'erreurs. Il permet de valider l'interface de bout en bout sans fournisseur.
 
 Deux modes exercent la chaîne de repli du client :
 
