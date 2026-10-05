@@ -176,6 +176,20 @@ describe('callLlm — délai couvrant l’appel entier', () => {
     vi.useRealTimers();
   });
 
+  /**
+   * L'attente est branchée **avant** d'avancer les horloges. Dans l'autre sens,
+   * la promesse rejette pendant `advanceTimersByTimeAsync` alors qu'aucun
+   * gestionnaire n'est encore attached : Vitest le compte comme rejet non géré et
+   * `npm test` sort en 1 malgré 120 assertions vertes.
+   */
+  async function expectTimeoutAfter(configOverrides: Record<string, string>, delayMs: number) {
+    const pending = expect(
+      callLlm({ text: 'texte', config: config(configOverrides) }),
+    ).rejects.toBeInstanceOf(TimeoutError);
+    await vi.advanceTimersByTimeAsync(delayMs);
+    await pending;
+  }
+
   it('traduit en TimeoutError une interruption survenue pendant la lecture du corps', async () => {
     // Amont « en-têtes puis silence » : `fetch` résout, `text()` ne résout jamais.
     // Aucune dépendance aux internes d'undici : c'est `Promise.race` qui borne.
@@ -186,10 +200,7 @@ describe('callLlm — délai couvrant l’appel entier', () => {
       text: () => new Promise<string>(() => {}),
     } as unknown as Response);
 
-    const pending = callLlm({ text: 'texte', config: config({ LLM_TIMEOUT_MS: '2500' }) });
-    await vi.advanceTimersByTimeAsync(2500);
-
-    await expect(pending).rejects.toBeInstanceOf(TimeoutError);
+    await expectTimeoutAfter({ LLM_TIMEOUT_MS: '2500' }, 2500);
   });
 
   it('borne aussi la réception des en-têtes', async () => {
@@ -203,10 +214,7 @@ describe('callLlm — délai couvrant l’appel entier', () => {
         }),
     );
 
-    const pending = callLlm({ text: 'texte', config: config({ LLM_TIMEOUT_MS: '1500' }) });
-    await vi.advanceTimersByTimeAsync(1500);
-
-    await expect(pending).rejects.toBeInstanceOf(TimeoutError);
+    await expectTimeoutAfter({ LLM_TIMEOUT_MS: '1500' }, 1500);
   });
 
   it('laisse passer une réponse dont le corps arrive dans le délai', async () => {
@@ -219,10 +227,11 @@ describe('callLlm — délai couvrant l’appel entier', () => {
       }),
     );
 
-    const pending = callLlm({ text: 'il a fais', config: config({ LLM_TIMEOUT_MS: '2500' }) });
+    const pending = expect(
+      callLlm({ text: 'il a fais', config: config({ LLM_TIMEOUT_MS: '2500' }) }),
+    ).resolves.toMatchObject({ errors: [{ replacement: 'fait' }] });
     await vi.advanceTimersByTimeAsync(100);
-
-    await expect(pending).resolves.toMatchObject({ errors: [{ replacement: 'fait' }] });
+    await pending;
   });
 
   it('annule la requête en cours quand le délai est atteint', async () => {
@@ -237,9 +246,7 @@ describe('callLlm — délai couvrant l’appel entier', () => {
       });
     });
 
-    const pending = callLlm({ text: 'texte', config: config({ LLM_TIMEOUT_MS: '1000' }) });
-    await vi.advanceTimersByTimeAsync(1000);
-    await expect(pending).rejects.toBeInstanceOf(TimeoutError);
+    await expectTimeoutAfter({ LLM_TIMEOUT_MS: '1000' }, 1000);
 
     expect(signals[0]?.aborted).toBe(true);
   });

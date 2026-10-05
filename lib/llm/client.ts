@@ -65,14 +65,16 @@ const chatCompletionSchema = z.object({
 
 const MAX_UPSTREAM_DETAIL_CHARS = 200;
 
-
 /**
  * Appelle un endpoint chat-completions compatible OpenAI et renvoie les erreurs
  * détectées, validées par schéma.
  *
- * Robustesse visée : un hôte qui ne supporte pas `response_format: json_schema`
- * renvoie 400 ; on rejoue alors **une seule fois** en `json_object`, ce qui couvre
- * vLLM, Ollama et llama.cpp. Aucune autre erreur n'est retentée.
+ * `LLM_TIMEOUT_MS` borne l'appel **entier** : envoi, réception des en-têtes et
+ * lecture du corps de la réponse. Une interruption pendant cette lecture est un
+ * `TimeoutError`, donc un `504` côté API, jamais un `502`.
+ *
+ * Sur la forme de la réponse, la progression est détaillée au bloc de la chaîne
+ * d'étapes, plus bas : au plus trois requêtes par correction.
  */
 export async function callLlm(options: CallLlmOptions): Promise<LlmCorrection> {
   const { text, config } = options;
