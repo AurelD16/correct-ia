@@ -84,14 +84,24 @@ export default function TextInputPanel({
         <h2 id={`${inputId}-titre`} className="text-base font-semibold text-slate-900">
           Texte à corriger
         </h2>
-        <p className={`text-xs tabular-nums ${counterClass}`} aria-live="polite">
+        {/*
+          Volontairement hors région `aria-live` : le compteur est réécrit à chaque
+          frappe et un lecteur d'écran annoncerait « N / max caractères » en continu.
+          Le dépassement de limite, lui, est signalé plus bas par un message dédié.
+        */}
+        <p className={`text-xs tabular-nums ${counterClass}`}>
           {value.length} / {maxChars} caractères
-          {isOverLimit ? ' — trop long, la correction sera refusée' : null}
         </p>
       </div>
       <label htmlFor={inputId} className="sr-only">
         Texte à corriger
       </label>
+      {isOverLimit ? (
+        <p role="status" className="text-xs font-medium text-red-700">
+          Le texte dépasse {maxChars} caractères. Raccourcissez-le pour lancer la correction :
+          aucun texte n&rsquo;est tronqué automatiquement.
+        </p>
+      ) : null}
       <textarea
         id={inputId}
         ref={textareaRef}

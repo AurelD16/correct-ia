@@ -288,6 +288,24 @@ describe('CorrectionApp — saisie', () => {
     expect((JSON.parse(init.body as string) as { text: string }).text).toHaveLength(9000);
   });
 
+  it('n’expose pas le compteur de caractères comme région live', () => {
+    render(<CorrectionApp defaultLanguage="fr" maxInputChars={8000} />);
+
+    const counter = screen.getByText(/\/ 8000 caractères/);
+    // Une région live réécrite à chaque frappe ferait annoncer le compteur en boucle.
+    expect(counter.closest('[aria-live]')).toBeNull();
+  });
+
+  it('annonce le dépassement de limite dans une région dédiée, pas le compteur', () => {
+    render(<CorrectionApp defaultLanguage="fr" maxInputChars={20} />);
+
+    // Le texte d'exemple dépasse déjà la limite : le message doit donc être là d'emblée.
+    const status = screen.getByRole('status');
+    expect(status).toHaveTextContent('Le texte dépasse 20 caractères');
+    expect(status).toHaveTextContent("aucun texte n’est tronqué automatiquement");
+    expect(screen.getByRole('button', { name: 'Corriger le texte' })).toBeDisabled();
+  });
+
   it("n'envoie jamais la configuration du LLM dans la requête", async () => {
     const fetchSpy = vi.fn(async () => new Response(JSON.stringify(RESULT), { status: 200 }));
     vi.stubGlobal('fetch', fetchSpy);

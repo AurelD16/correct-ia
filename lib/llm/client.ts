@@ -65,9 +65,6 @@ const chatCompletionSchema = z.object({
 
 const MAX_UPSTREAM_DETAIL_CHARS = 200;
 
-type ResponseFormat =
-  | { type: 'json_schema'; json_schema: { name: string; strict: true; schema: unknown } }
-  | { type: 'json_object' };
 
 /**
  * Appelle un endpoint chat-completions compatible OpenAI et renvoie les erreurs
@@ -83,44 +80,62 @@ export async function callLlm(options: CallLlmOptions): Promise<LlmCorrection> {
   const now = options.now ?? (() => Date.now());
 
   const messages = buildMessages(text, config);
-  const primaryFormat: ResponseFormat = config.structuredOutput
-    ? {
-        type: 'json_schema',
-        json_schema: {
-          name: MODEL_OUTPUT_SCHEMA_NAME,
-          strict: true,
-          schema: modelOutputJsonSchema,
-        },
-      }
-    : { type: 'json_object' };
 
   const startedAt = now();
-  const primary = await postChatCompletion({
-    doFetch,
-    config,
-    messages,
-    responseFormat: primaryFormat,
-  });
 
-  let completion = primary.completion;
-  let usedFallback = false;
+  /**
+   * Chaîne d'étapes, au plus 3 requêtes par correction :
+   *  1. `json_schema` (ou `json_object` si le mode structuré est désactivé) ;
+   *  2. `json_object` si l'hôte refuse le mode structuré ;
+   *  3. aucun `response_format` du tout, pour les moteurs qui refusent le
+   *     paramètre lui-même (vLLM, Ollama, llama.cpp).
+   *
+   * Le passage à l'étape suivante n'a lieu que sur un refus de format ; tout
+   * autre statut non 2xx est une erreur amont, en une seule requête.
+   */
+  const stages: (ResponseFormat | null)[] = config.structuredOutput
+    ? [
+        {
+          type: 'json_schema',
+          json_schema: {
+            name: MODEL_OUTPUT_SCHEMA_NAME,
+            strict: true,
+            schema: modelOutputJsonSchema,
+          },
+        },
+        { type: 'json_object' },
+        null,
+      ]
+    : [{ type: 'json_object' }, null];
 
-  if (primary.detail !== null && isResponseFormatRejection(primary.detail)) {
-    log(config, 'repli json_object après 400 response_format');
-    const retry = await postChatCompletion({
+  let completion: { content: string; usage?: Usage } | null = null;
+  let succeededStage = -1;
+
+  for (let index = 0; index < stages.length; index += 1) {
+    const responseFormat = stages[index] as ResponseFormat | null;
+    const attempt = await postChatCompletion({
       doFetch,
       config,
       messages,
-      responseFormat: { type: 'json_object' },
+      responseFormat,
     });
-    if (retry.detail !== null) {
-      throw new UpstreamError(sanitize(retry.detail, config.apiKey), retry.detail.status);
+
+    if (attempt.detail === null) {
+      completion = attempt.completion;
+      succeededStage = index;
+      break;
     }
-    completion = retry.completion;
-    usedFallback = true;
-  } else if (primary.detail !== null) {
-    // Statut amont non-2xx qui n'appelle pas de rejeu : erreur déjà assainie.
-    throw new UpstreamError(sanitize(primary.detail, config.apiKey), primary.detail.status);
+    if (!isFormatRejection(attempt.detail)) {
+      throw new UpstreamError(sanitize(attempt.detail, config.apiKey), attempt.detail.status);
+    }
+    log(config, `étape ${index + 1} refusée (${describeStage(responseFormat)}), repli`);
+  }
+
+  if (completion === null) {
+    throw new UpstreamError(
+      `le service de correction a refusé les ${stages.length} formes de réponse demandées`,
+      400,
+    );
   }
 
   const durationMs = now() - startedAt;
@@ -128,7 +143,7 @@ export async function callLlm(options: CallLlmOptions): Promise<LlmCorrection> {
 
   log(
     config,
-    `appel LLM terminé${usedFallback ? ' (repli)' : ''} en ${durationMs} ms`,
+    `appel LLM terminé (étape ${succeededStage + 1}/${stages.length}) en ${durationMs} ms`,
     usage,
   );
 
@@ -149,6 +164,12 @@ export async function callLlm(options: CallLlmOptions): Promise<LlmCorrection> {
   }
 }
 
+/** `null` = aucun champ `response_format` dans le corps de la requête. */
+type ResponseFormat =
+  | { type: 'json_schema'; json_schema: { name: string; strict: true; schema: unknown } }
+  | { type: 'json_object' }
+  | null;
+
 interface PostArgs {
   doFetch: typeof fetch;
   config: LlmConfig;
@@ -162,26 +183,58 @@ async function postChatCompletion(args: PostArgs): Promise<{
 }> {
   const { config, messages, responseFormat } = args;
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), config.timeoutMs);
+
+  /**
+   * Le délai couvre **l'appel entier** : envoi, réception des en-têtes *et* lecture
+   * du corps. `fetch` ne résout qu'à la réception des en-têtes, donc `clearTimeout`
+   * est volontairement placé après `safeReadText`. Sans cela, un amont qui répond
+   * `200` puis se tait bloquerait l'interface indéfiniment.
+   *
+   * `Promise.race` rend la borne déterministe même avec une implémentation de
+   * `fetch` qui n'honore pas le signal d'annulation ; l'`abort` reste nécessaire
+   * pour libérer la connexion en amont.
+   */
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => {
+      controller.abort();
+      reject(new TimeoutError(`le service de correction n'a pas répondu en ${config.timeoutMs} ms`));
+    }, config.timeoutMs);
+  });
+
+  const payload: RequestInit['body'] = JSON.stringify({
+    model: config.model,
+    messages,
+    temperature: config.temperature,
+    max_tokens: 4096,
+    // Étape « sans `response_format` » : le champ est absent, pas \`null\`.
+    ...(responseFormat === null ? {} : { response_format: responseFormat }),
+  });
 
   let response: Response;
+  let raw: string;
   try {
-    response = await args.doFetch(`${config.baseUrl}/chat/completions`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${config.apiKey}`,
-      },
-      body: JSON.stringify({
-        model: config.model,
-        messages,
-        temperature: config.temperature,
-        max_tokens: 4096,
-        response_format: responseFormat,
+    response = await Promise.race([
+      args.doFetch(`${config.baseUrl}/chat/completions`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${config.apiKey}`,
+        },
+        body: payload,
+        signal: controller.signal,
       }),
-      signal: controller.signal,
-    });
+      deadline,
+    ]);
+
+    if (!response.ok) {
+      raw = await Promise.race([safeReadText(response), deadline]);
+      return { completion: { content: '' }, detail: { status: response.status, body: raw } };
+    }
+
+    raw = await Promise.race([safeReadText(response), deadline]);
   } catch (error) {
+    if (error instanceof TimeoutError) throw error;
     if (isAbortError(error)) {
       throw new TimeoutError(`le service de correction n'a pas répondu en ${config.timeoutMs} ms`);
     }
@@ -192,13 +245,7 @@ async function postChatCompletion(args: PostArgs): Promise<{
     clearTimeout(timer);
   }
 
-  const body = await safeReadText(response);
-
-  if (!response.ok) {
-    return { completion: { content: '' }, detail: { status: response.status, body } };
-  }
-
-  const parsed = chatCompletionSchema.safeParse(safeJsonParse(body));
+  const parsed = chatCompletionSchema.safeParse(safeJsonParse(raw));
   if (!parsed.success) {
     throw new InvalidModelOutputError('réponse du service de correction au format inattendu');
   }
@@ -219,13 +266,20 @@ async function postChatCompletion(args: PostArgs): Promise<{
   return { completion: { content, usage }, detail: null };
 }
 
+/** Étape en cours, pour les journaux et les messages d'erreur. */
+function describeStage(responseFormat: ResponseFormat): string {
+  if (responseFormat === null) return 'sans response_format';
+  return responseFormat.type;
+}
+
 /**
- * Un 400 qui mentionne `response_format` signale un hôte sans support du mode
- * structuré : c'est le seul cas où l'on rejoue la requête.
+ * Un 400 qui mentionne `json_schema` ou `response_format` signale un hôte dont le
+ * support du mode structuré est incomplet : c'est le seul cas qui fasse avancer la
+ * chaîne de repli. Tout autre statut non 2xx est une erreur amont franche.
  */
-function isResponseFormatRejection(detail: UpstreamDetail): boolean {
+function isFormatRejection(detail: UpstreamDetail): boolean {
   if (detail.status !== 400) return false;
-  return /response[_ ]?format|json_schema/i.test(detail.body);
+  return /response[_ ]?format|json_schema|structured output/i.test(detail.body);
 }
 
 /** Jamais de clé d'API ni de stack trace dans un message remonté au client. */
@@ -237,18 +291,28 @@ function sanitize(detail: UpstreamDetail, apiKey: string): string {
     : `le service de correction a répondu ${status} : ${truncate(body, MAX_UPSTREAM_DETAIL_CHARS)}`;
 }
 
+const REDACTION = '[clé masquée]';
+
 /**
  * Un hôte peut rappeler la clé reçue dans son message d'erreur (401 « incorrect
- * API key »). Elle est donc retirée avant tout retour au client.
+ * API key », « Authorization was Bearer … »). Elle est donc retirée avant tout
+ * retour au client.
+ *
+ * L'ordre compte, et il est contre-intuitif : les motifs génériques sont appliqués
+ * **d'abord**, sur le texte d'origine. Le substitut contient lui-même un espace, donc
+ * `Bearer\s+\S+` s'arrêterait à `[clé` et laisserait un ` masquée]` résiduel —
+ * `Bearer [clé masquée] masquée]`. Masquer d'abord la clé exacte, puis retaille par
+ * le motif générique, produit exactement cette casse.
  */
 function redact(value: string, apiKey: string): string {
-  let result = value;
-  if (apiKey.length >= 8) {
-    result = result.replaceAll(apiKey, '[clé masquée]');
-  }
-  return result
-    .replace(/Bearer\s+\S+/gi, 'Bearer [clé masquée]')
-    .replace(/\bsk-[A-Za-z0-9_-]{8,}\b/g, '[clé masquée]');
+  const generic = redactGeneric(value);
+  return apiKey.length >= 8 ? generic.replaceAll(apiKey, REDACTION) : generic;
+}
+
+function redactGeneric(value: string): string {
+  return value
+    .replace(/Bearer\s+\S+/gi, `Bearer ${REDACTION}`)
+    .replace(/\bsk-[A-Za-z0-9_-]{8,}\b/g, REDACTION);
 }
 
 function truncate(value: string, max: number): string {
@@ -256,12 +320,23 @@ function truncate(value: string, max: number): string {
   return collapsed.length <= max ? collapsed : `${collapsed.slice(0, max)}…`;
 }
 
+/**
+ * Lecture leniente du JSON renvoyé par le modèle, indispensable à l'étape « sans
+ * `response_format` » : sans contrainte du serveur, le modèle peut préfixer ou
+ * suffixer son JSON d'un commentaire. Trois tentatives, de la plus stricte à la
+ * plus tolérante.
+ */
 function safeJsonParse(value: string): unknown {
-  try {
-    return JSON.parse(stripCodeFence(value));
-  } catch {
-    return undefined;
+  const candidates = [value.trim(), stripCodeFence(value), extractFirstJsonObject(value)];
+  for (const candidate of candidates) {
+    if (candidate === null || candidate === '') continue;
+    try {
+      return JSON.parse(candidate);
+    } catch {
+      // on tente la stratégie suivante
+    }
   }
+  return undefined;
 }
 
 /** Certains hébergeurs entourent encore le JSON d'un bloc Markdown. */
@@ -272,6 +347,42 @@ function stripCodeFence(value: string): string {
     .replace(/^```[a-zA-Z]*\s*/u, '')
     .replace(/```$/u, '')
     .trim();
+}
+
+/**
+ * Premier objet `{…}` équilibré, chaînes et échappements respectés, pour extraire
+ * le JSON d'un texte qui l'entoure. `null` si l'on n'en trouve pas.
+ */
+function extractFirstJsonObject(value: string): string | null {
+  const start = value.indexOf('{');
+  if (start === -1) return null;
+
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+
+  for (let index = start; index < value.length; index += 1) {
+    const char = value[index] as string;
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (char === '\\') {
+      escaped = true;
+      continue;
+    }
+    if (char === '"') {
+      inString = !inString;
+      continue;
+    }
+    if (inString) continue;
+    if (char === '{') depth += 1;
+    else if (char === '}') {
+      depth -= 1;
+      if (depth === 0) return value.slice(start, index + 1);
+    }
+  }
+  return null;
 }
 
 async function safeReadText(response: Response): Promise<string> {

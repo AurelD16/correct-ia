@@ -43,14 +43,15 @@ Toutes les variables sont lues **côté serveur** (`lib/env.ts`). Aucune n'est p
 | `LLM_MODEL` | `gpt-4o-mini` | Identifiant du modèle. |
 | `LLM_LANGUAGE` | `fr` | Langue de travail du correcteur et langue par défaut de l'interface. |
 | `LLM_TEMPERATURE` | `0` | Température de génération, entre 0 et 2. |
-| `LLM_TIMEOUT_MS` | `60000` | Délai maximal d'attente du fournisseur. |
+| `LLM_TIMEOUT_MS` | `60000` | Délai maximal de l'appel au fournisseur. Borne l'appel **entier** : envoi, réception des en-têtes et lecture du corps de la réponse. Dépassement → `504`. |
 | `LLM_MAX_INPUT_CHARS` | `8000` | Longueur maximale acceptée. Au-delà : refus `400`, jamais de troncature. La valeur est lue côté serveur et transmise à l'interface, qui compte les caractères, alerte à 80 % et bloque la soumission au-dessus de cette limite. |
 | `LLM_STRUCTURED_OUTPUT` | `true` | `true` → `response_format: json_schema` strict ; `false` → `json_object`. |
 | `LOG_TEXT` | `false` | Journalise le texte utilisateur. À laisser à `false` hors développement. |
 
-La configuration est validée au démarrage (zod). En développement, une configuration
-incomplète échoue immédiatement avec un message explicite ; sinon l'API répond `503`
-« service non configuré ».
+La configuration est validée à chaque appel de l'API (zod). Une configuration incomplète
+n'arrête pas le serveur : l'interface s'affiche, et l'API répond `503` « service non configuré ».
+En développement, les champs manquants sont nommés dans le log serveur (`[correct] configuration
+LLM invalide : …`) ; ils ne le sont jamais dans la réponse HTTP.
 
 ## Lancer l'application
 
@@ -76,14 +77,22 @@ LLM_BASE_URL=http://localhost:8787/v1 LLM_API_KEY=mock LLM_MODEL=mock-1 npm run 
 ```
 
 `scripts/mock-llm.mjs` expose un endpoint `chat/completions` compatible OpenAI sur le port
-`8787` et renvoie trois erreurs calculées à partir du texte reçu (par exemple `a` → `à`,
-`heur` → `heures`, `ete` → `été`). Il permet de valider l'interface de bout en bout sans
-fournisseur.
+`8787`. Il détecte quatre fautes sans accent — `a` → `à`, `heur` → `heures`,
+`etre` → `été`, `malgres` → `malgré` — **à la frontière d'un mot**, et ne renvoie que
+celles qu'il trouve réellement dans le texte soumis. Sur le texte d'exemple de
+l'application, il en trouve trois. C'est un harnais de test, pas un correcteur : sur un
+texte courant il produit un nombre variable d'erreurs. Il permet de valider l'interface
+de bout en bout sans fournisseur.
 
-Pour tester le repli `json_schema` → `json_object` :
+Deux modes exercent la chaîne de repli du client :
 
 ```bash
+# l'hôte refuse le mode structuré mais accepte le paramètre -> json_object, 2 requêtes
 MOCK_LLM_MODE=reject-json-schema npm run mock:llm
+
+# l'hôte refuse le paramètre lui-même (llama.cpp, certaines versions d'Ollama)
+# -> 3e tentative sans response_format, et JSON renvoyé entouré de texte
+MOCK_LLM_MODE=reject-response-format npm run mock:llm
 ```
 
 ## Contrat API
@@ -133,7 +142,7 @@ que le serveur n'a pas pu localiser dans le texte source ; elles s'affichent dan
 ## Tests et vérifications
 
 ```bash
-npm test        # 104 tests, aucune clé d'API requise
+npm test        # suite complète, aucune clé d'API requise
 npm run lint
 npm run typecheck
 npm run build
@@ -143,6 +152,15 @@ Les tests sont colocalisés (`*.test.ts` / `*.test.tsx`) à côté du code qu'il
 Aucun test ne contacte un fournisseur réel : `fetch` est simulé, l'API est testée en
 injectant l'environnement.
 
+## Limites connues
+
+- Sans configuration, la réponse est `503` même si le texte est aussi trop long : la
+  configuration est vérifiée avant la longueur. La requête serait de toute façon
+  refusable sans regarder la configuration ; l'ordre reste un choix, pas une nécessité.
+- `max_tokens` est figé à `4096` dans le client ; il n'est pas exposé dans `.env`.
+- Le délai de `LLM_TIMEOUT_MS` est appliqué **par requête** : une correction qui épuiserait
+  les trois requêtes de la chaîne de repli peut prendre jusqu'à `3 × LLM_TIMEOUT_MS`.
+
 ## Adapter à un autre fournisseur OpenAI-compatible
 
 vLLM, Ollama, llama.cpp, LiteLLM, OpenRouter… tant que l'endpoint
@@ -150,9 +168,11 @@ vLLM, Ollama, llama.cpp, LiteLLM, OpenRouter… tant que l'endpoint
 
 1. Adapter `LLM_BASE_URL` (par exemple `http://localhost:11434/v1` pour Ollama).
 2. Adapter `LLM_MODEL` au nom du modèle servi localement.
-3. Si l'hôte refuse `response_format`, laisser `LLM_STRUCTURED_OUTPUT=false` : l'application
-   bascule alors sur `json_object`. Si l'hôte renvoie un `400` mentionnant `response_format`
-   malgré tout, le client rejoue automatiquement une fois sans ce paramètre.
+3. Si l'hôte refuse le mode structuré, laisser `LLM_STRUCTURED_OUTPUT=false` : la chaîne
+   de repli de l'application est déjà automatique et progressive, sans configuration —
+   `json_schema` → `json_object` → **aucun** `response_format`, au plus 3 requêtes par
+   correction. Si l'hôte renvoie `400` mentionnant `response_format` ou `json_schema`,
+   l'étape suivante est tentée ; tout autre statut non 2xx est un `502` en une requête.
 
 Si un fournisseur expose un format de réponse différent, tout est isolé dans
 `lib/llm/client.ts` : c'est le seul point à adapter. `lib/correction/` et `lib/schemas.ts`

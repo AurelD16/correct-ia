@@ -171,22 +171,163 @@ describe('callLlm — requête sortante', () => {
   });
 });
 
-describe('callLlm — repli json_schema → json_object', () => {
-  it('rejoue une seule fois sans response_format sur 400 mentionnant response_format', async () => {
+describe('callLlm — délai couvrant l’appel entier', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('traduit en TimeoutError une interruption survenue pendant la lecture du corps', async () => {
+    // Amont « en-têtes puis silence » : `fetch` résout, `text()` ne résout jamais.
+    // Aucune dépendance aux internes d'undici : c'est `Promise.race` qui borne.
+    vi.useFakeTimers();
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      text: () => new Promise<string>(() => {}),
+    } as unknown as Response);
+
+    const pending = callLlm({ text: 'texte', config: config({ LLM_TIMEOUT_MS: '2500' }) });
+    await vi.advanceTimersByTimeAsync(2500);
+
+    await expect(pending).rejects.toBeInstanceOf(TimeoutError);
+  });
+
+  it('borne aussi la réception des en-têtes', async () => {
+    vi.useFakeTimers();
+    fetchMock.mockImplementationOnce(
+      (_url: string, init: RequestInit) =>
+        new Promise((_resolve, reject) => {
+          init.signal?.addEventListener('abort', () => {
+            reject(new DOMException('aborted', 'AbortError'));
+          });
+        }),
+    );
+
+    const pending = callLlm({ text: 'texte', config: config({ LLM_TIMEOUT_MS: '1500' }) });
+    await vi.advanceTimersByTimeAsync(1500);
+
+    await expect(pending).rejects.toBeInstanceOf(TimeoutError);
+  });
+
+  it('laisse passer une réponse dont le corps arrive dans le délai', async () => {
+    vi.useFakeTimers();
+    fetchMock.mockResolvedValueOnce(
+      completionResponse({
+        errors: [
+          { excerpt: 'fais', replacement: 'fait', explanation: 'x', category: 'orthographe', severity: 'erreur' },
+        ],
+      }),
+    );
+
+    const pending = callLlm({ text: 'il a fais', config: config({ LLM_TIMEOUT_MS: '2500' }) });
+    await vi.advanceTimersByTimeAsync(100);
+
+    await expect(pending).resolves.toMatchObject({ errors: [{ replacement: 'fait' }] });
+  });
+
+  it('annule la requête en cours quand le délai est atteint', async () => {
+    vi.useFakeTimers();
+    const signals: (AbortSignal | null | undefined)[] = [];
+    fetchMock.mockImplementationOnce((_url: string, init: RequestInit) => {
+      signals.push(init.signal ?? null);
+      return new Promise<Response>((_resolve, reject) => {
+        init.signal?.addEventListener('abort', () => {
+          reject(new DOMException('aborted', 'AbortError'));
+        });
+      });
+    });
+
+    const pending = callLlm({ text: 'texte', config: config({ LLM_TIMEOUT_MS: '1000' }) });
+    await vi.advanceTimersByTimeAsync(1000);
+    await expect(pending).rejects.toBeInstanceOf(TimeoutError);
+
+    expect(signals[0]?.aborted).toBe(true);
+  });
+});
+
+describe('callLlm — repli json_schema → json_object → sans response_format', () => {
+  it('rejoue en json_object quand l’hôte refuse le mode structuré', async () => {
     fetchMock
       .mockResolvedValueOnce(
-        errorResponse(400, "Unsupported parameter: 'response_format' is not supported by this model."),
+        errorResponse(400, "Unsupported value: 'json_schema' in 'response_format'. Use 'json_object'."),
       )
       .mockResolvedValueOnce(completionResponse({ errors: [] }));
 
-    const result = await callLlm({ text: 'texte', config: config({ LLM_STRUCTURED_OUTPUT: 'true' }) });
+    await callLlm({ text: 'texte', config: config({ LLM_STRUCTURED_OUTPUT: 'true' }) });
 
     expect(fetchMock).toHaveBeenCalledTimes(2);
     const first = JSON.parse((fetchMock.mock.calls[0] as [string, RequestInit])[1].body as string);
     const second = JSON.parse((fetchMock.mock.calls[1] as [string, RequestInit])[1].body as string);
     expect(first.response_format.type).toBe('json_schema');
     expect(second.response_format).toEqual({ type: 'json_object' });
-    expect(result.errors).toEqual([]);
+  });
+
+  it('retire le champ response_format à la troisième tentative si l’hôte refuse le paramètre', async () => {
+    fetchMock
+      .mockResolvedValueOnce(
+        errorResponse(400, "Unsupported parameter: 'response_format' is not supported by this model."),
+      )
+      .mockResolvedValueOnce(
+        errorResponse(400, "Unsupported parameter: 'response_format' is not supported by this model."),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            choices: [
+              {
+                message: {
+                  role: 'assistant',
+                  content:
+                    'Voici les anomalies : {"errors":[{"excerpt":"heur","replacement":"heures","explanation":"Pluriel.","category":"orthographe","severity":"erreur"}]} — bonne correction !',
+                },
+              },
+            ],
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        ),
+      );
+
+    const result = await callLlm({ text: 'il a heur', config: config() });
+
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    const third = JSON.parse((fetchMock.mock.calls[2] as [string, RequestInit])[1].body as string);
+    expect(third).not.toHaveProperty('response_format');
+    expect(third.messages).toHaveLength(2);
+    // Extraction leniente : le JSON est entouré de texte.
+    expect(result.errors).toEqual([
+      {
+        excerpt: 'heur',
+        replacement: 'heures',
+        explanation: 'Pluriel.',
+        category: 'orthographe',
+        severity: 'erreur',
+      },
+    ]);
+  });
+
+  it('ne dépasse jamais trois requêtes et échoue proprement si toutes sont refusées', async () => {
+    // Une `Response` neuve à chaque appel : un corps déjà consommé ne serait pas
+    // relisible et simulerait à tort un refus non identifiable.
+    fetchMock.mockImplementation(async () =>
+      errorResponse(400, "Unsupported parameter: 'response_format' is not supported by this model."),
+    );
+
+    await expect(callLlm({ text: 'texte', config: config() })).rejects.toMatchObject({ status: 400 });
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+
+  it('ne fait que deux requêtes quand le mode structuré est désactivé', async () => {
+    fetchMock
+      .mockResolvedValueOnce(
+        errorResponse(400, "Unsupported parameter: 'response_format' is not supported by this model."),
+      )
+      .mockResolvedValueOnce(completionResponse({ errors: [] }));
+
+    await callLlm({ text: 'texte', config: config({ LLM_STRUCTURED_OUTPUT: 'false' }) });
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    const second = JSON.parse((fetchMock.mock.calls[1] as [string, RequestInit])[1].body as string);
+    expect(second).not.toHaveProperty('response_format');
   });
 
   it('ne rejoue pas sur un 400 sans rapport avec response_format', async () => {
@@ -203,15 +344,38 @@ describe('callLlm — repli json_schema → json_object', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
-  it('propage une erreur assainie si le rejeu échoue aussi', async () => {
-    fetchMock
-      .mockResolvedValueOnce(errorResponse(400, 'response_format not supported'))
-      .mockResolvedValueOnce(errorResponse(429, 'rate limited'));
+  it('ne rejoue pas sur un 404 même s’il mentionne response_format', async () => {
+    fetchMock.mockResolvedValueOnce(errorResponse(404, 'response_format not found'));
 
-    await expect(callLlm({ text: 'texte', config: config() })).rejects.toMatchObject({
-      status: 429,
-    });
-    expect(fetchMock).toHaveBeenCalledTimes(2);
+    await expect(callLlm({ text: 'texte', config: config() })).rejects.toMatchObject({ status: 404 });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('callLlm — assainissement des messages', () => {
+  it('produit un message lisible quand l’hôte rappelle l’en-tête Authorization', async () => {
+    fetchMock.mockResolvedValueOnce(
+      errorResponse(500, 'upstream error, Authorization was Bearer sk-secret-key'),
+    );
+
+    const error = (await callLlm({ text: 'texte', config: config() }).catch((e: unknown) => e)) as Error;
+
+    expect(error.message).toContain('Bearer [clé masquée]');
+    expect(error.message).not.toContain('sk-secret-key');
+    // Le substitut ne doit jamais être retaille par le motif générique.
+    expect(error.message).not.toContain('] masquée]');
+    expect(error.message).not.toContain('[clé masquée] masquée]');
+  });
+
+  it('masque une clé rappelée avec le préfixe Bearer, quel que soit son format', async () => {
+    fetchMock.mockResolvedValueOnce(
+      errorResponse(500, 'Authorization: Bearer abcdef0123456789abcdef'),
+    );
+
+    const error = (await callLlm({ text: 'texte', config: config() }).catch((e: unknown) => e)) as Error;
+
+    expect(error.message).not.toContain('abcdef0123456789abcdef');
+    expect(error.message).not.toContain('] masquée]');
   });
 });
 
@@ -234,6 +398,17 @@ describe('callLlm — erreurs amont assainies', () => {
 
     expect(error.message).not.toContain('sk-abcdefgh12345678');
     expect(error.message).toContain('[clé masquée]');
+  });
+
+  it('ne divulgue pas la clé quand l’hôte la renvoie préfixée par « Bearer »', async () => {
+    fetchMock.mockResolvedValueOnce(
+      errorResponse(500, 'upstream error, Authorization was Bearer sk-secret-key'),
+    );
+
+    const error = (await callLlm({ text: 'texte', config: config() }).catch((e: unknown) => e)) as Error;
+
+    expect(error.message).toContain('[clé masquée]');
+    expect(error.message).not.toContain('sk-secret-key');
   });
 
   it('tronque le détail amont à 200 caractères', async () => {
