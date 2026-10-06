@@ -239,11 +239,15 @@ curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:3000/          # 200
 curl -s -X POST http://127.0.0.1:3000/api/correct \
   -H 'content-type: application/json' \
   --data-binary @- <<'JSON'
-{"text":"La réunion de projet aura lieu demain a 14 heur.
-J'ai beaucoup de travail a faire, mais le rapport doit etre fini.
-Malgrés le retard, nous avons quand meme reussi à advanced le calendrier."}
+{"text":"La réunion de projet aura lieu demain a 14 heur.\nJ'ai beaucoup de travail a faire, mais le rapport doit etre fini.\nMalgrés le retard, nous avons quand meme reussi à advanced le calendrier."}
 JSON
 ```
+
+Le JSON tient sur **une seule ligne**, les sauts de ligne du texte étant écrits `\n` : une
+chaîne JSON ne peut pas contenir de saut de ligne brut, et l'API répond alors `400`
+« Corps de requête invalide ». Le `<<'JSON'` (délimiteur entre apostrophes) laisse `\n`
+et l'apostrophe de `J'ai` tels quels, sans échappement shell. Reformater ce JSON sur
+plusieurs lignes le rendrait invalide.
 
 `GET /` répond `200`, `POST /api/correct` répond `200` avec les **quatre** erreurs que le
 faux serveur sait détecter (`demain a 14 heur`, `a faire`, `doit etre fini`,
