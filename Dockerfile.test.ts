@@ -126,6 +126,17 @@ describe('.dockerignore', () => {
     expect(envRules.filter((rule) => !rule.endsWith('*'))).toEqual([]);
     expect(envRules.filter((rule) => rule.startsWith('!'))).toEqual([]);
   });
+
+  it('interdit toute ré-inclusion, quel que soit son motif', () => {
+    // Volontairement brutal. Les assertions ci-dessus ne voient que les règles
+    // dont le texte contient `.env` : une ré-inclusion générique passe dessous,
+    // et le test restait vert pendant que la fuite revenait par la chaîne
+    // habituelle — contexte du builder, puis `.next/standalone`, puis runner.
+    // Aucune ré-inclusion n'a jamais été nécessaire ici, et « aucune exception »
+    // se relit sans connaître la sémantique de `.dockerignore`, contrairement à
+    // « aucune exception sauf celles qui nomment un `.env` ».
+    expect(rules.filter((rule) => rule.startsWith('!'))).toEqual([]);
+  });
 });
 
 describe('next.config.ts', () => {

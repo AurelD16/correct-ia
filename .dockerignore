@@ -21,6 +21,12 @@ next-env.d.ts
 # d'environnement dans `.next/standalone/`, qui atterrit dans le stage `runner`.
 **/.env*
 
+# Jetons npm et autres identifiants — défense en profondeur, hors `.env*`.
+# Un `_authToken` malformé ferait échouer `npm ci` ou `npm run build` dans
+# l'image (ERR_INVALID_AUTH) ; le jeton lui-même n'atteindrait pas le runner.
+.npmrc
+.netrc
+
 # Tests et couverture — `*.test.ts(x)` sont CONSERVÉS : le typecheck du build les
 # couvre. Seuls les rapports de couverture sont écartés.
 coverage
