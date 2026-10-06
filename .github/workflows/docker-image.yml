@@ -1,0 +1,92 @@
+name: Image Docker
+
+# Construit et publie l'image de production sur le GitHub Container Registry à
+# chaque push sur `main`, et à la demande. Le registre est lié au dépôt : aucun
+# secret supplémentaire n'est requis, `GITHUB_TOKEN` suffit.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  # Tag de version mutable de l'image. Bump en une ligne : c'est ici que se
+  # trouve la version publiée, pas dans le `metadata-action`.
+  #
+  # Attention : ce tag est réécrit à chaque push sur `main`. Le jour où le dépôt
+  # versionne par tags git, remplacer dans `metadata-action` la ligne
+  # `type=raw,value=${{ env.IMAGE_VERSION_TAG }},enable=...` par
+  # `type=semver,pattern=v{{version}}` et déclencher le workflow sur
+  # `push: tags`.
+  IMAGE_VERSION_TAG: v1.0
+
+permissions:
+  contents: read
+
+concurrency:
+  group: docker-image-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quality:
+    name: Qualité
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - run: npm run lint
+
+      - run: npm run typecheck
+
+      - run: npm test
+
+      - run: npm run build
+
+  publish:
+    name: Publication
+    needs: quality
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-qemu-action@v3
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=ref,event=branch
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=raw,value=${{ env.IMAGE_VERSION_TAG }},enable={{is_default_branch}}
+            type=sha,format=short
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          platforms: linux/amd64,linux/arm64
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

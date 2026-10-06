@@ -146,6 +146,165 @@ MOCK_LLM_MODE=reject-response-format npm run mock:llm
 `replacement` vide signifie « supprimer ce passage ». Les `warnings` signalent les anomalies
 que le serveur n'a pas pu localiser dans le texte source ; elles s'affichent dans la liste.
 
+## Conteneurisation
+
+### Construire et lancer
+
+```bash
+docker build -t correct-ia:local .        # ou : npm run docker:build
+docker run --rm -p 3000:3000 \
+  --add-host=host.docker.internal:host-gateway \
+  -e LLM_BASE_URL=https://api.openai.com/v1 \
+  -e LLM_API_KEY=sk-... \
+  -e LLM_MODEL=gpt-4o-mini \
+  correct-ia:local
+```
+
+Ou, contre le faux serveur local :
+
+```bash
+npm run docker:run    # containerisé, variables déjà préremplies pour le mock
+```
+
+Le serveur écoute sur `0.0.0.0:3000` et sert `/` sans configuration : l'interface
+s'affiche, seule l'API renvoie `503`. Le `HEALTHCHECK` teste `/`, donc l'état de santé
+ne dépend pas d'un fournisseur.
+
+### Garantie non-root
+
+Le stage final déclare `USER node` — l'utilisateur `node` (uid 1000) de l'image
+officielle — et ne contient **aucune** instruction en `root`. Vérifications :
+
+```bash
+docker inspect --format '{{.Config.User}}' correct-ia:local   # node
+docker run --rm --entrypoint id correct-ia:local -u           # 1000
+docker run --rm --entrypoint id correct-ia:local               # uid=1000(node) gid=1000(node)
+```
+
+Le cache `.next/cache` est créé et attribué à `node` avant le changement d'utilisateur,
+sinon le serveur autonome ne pourrait pas écrire dedans.
+
+### Aucun secret dans l'image
+
+La configuration est lue **au moment de la requête**, côté serveur (`lib/env.ts`). Elle
+n'est donc jamais figée au build :
+
+- aucun `ARG` de build, aucun `ENV` de clé dans le `Dockerfile` ;
+- aucun `COPY .env*` ;
+- `.dockerignore` écarte `.env`, `.env.local`, `.env.*.local` du contexte de build.
+
+`Dockerfile.test.ts` garde ces trois règles par assertion. Les variables `LLM_*` se
+passent à l'exécution (`-e …`, `--env-file …`, ou secrets du Deployment) : un `docker
+history` ne peut pas les révéler.
+
+### Structure de l'image
+
+Multi-stage sur `node:22-slim` (Node 22 est la version testée par le workflow ; `slim`
+plutôt qu'`alpine` pour éviter les divergences musl et les binaires natifs) :
+
+| Stage | Rôle |
+|---|---|
+| `deps` | `npm ci` sur `package.json` + `package-lock.json`, calculé une seule fois |
+| `builder` | build Next.js (`output: 'standalone'`), dépendances complètes |
+| `runner` | `.next/standalone` + `.next/static`, utilisateur `node`, sans `.git` ni sources |
+
+L'image pèse **410 Mo** sur disque, dont ~92 Mo transférés une fois compressés
+(`docker save | gzip -9`) : l'essentiel est la base `node:22-slim` et les `node_modules`
+réduites par le serveur autonome, pas l'application (97 Ko de First Load JS).
+
+`public/` n'existe pas dans ce dépôt : rien n'est copié pour lui. Ajouter un dossier
+`public/` imposera d'ajouter le `COPY` correspondant au stage `runner` — un `COPY` d'une
+source absente fait échouer le build.
+
+### Smoke test de bout en bout
+
+`scripts/mock-llm.mjs` n'est pas embarqué dans l'image (le serveur autonome ne
+l'embarque pas) : il se lance **sur l'hôte**.
+
+```bash
+# terminal 1
+npm run mock:llm
+
+# terminal 2 — construit et lancé avec la configuration du mock
+docker build -t correct-ia:local .
+docker run --rm -p 3000:3000 \
+  --add-host=host.docker.internal:host-gateway \
+  -e LLM_BASE_URL=http://host.docker.internal:8787/v1 \
+  -e LLM_API_KEY=mock \
+  -e LLM_MODEL=mock-1 \
+  correct-ia:local
+
+# terminal 3
+curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:3000/          # 200
+curl -s -X POST http://127.0.0.1:3000/api/correct \
+  -H 'content-type: application/json' \
+  --data-binary @- <<'JSON'
+{"text":"La réunion de projet aura lieu demain a 14 heur.
+J'ai beaucoup de travail a faire, mais le rapport doit etre fini.
+Malgrés le retard, nous avons quand meme reussi à advanced le calendrier."}
+JSON
+```
+
+`GET /` répond `200`, `POST /api/correct` répond `200` avec les **quatre** erreurs que le
+faux serveur sait détecter (`demain a 14 heur`, `a faire`, `doit etre fini`,
+`Malgrés le retard`). C'est le texte d'exemple de l'application : sur une phrase plus
+courte, le faux serveur n'en trouve qu'une partie — c'est normal, il ne renvoie que les
+groupes réellement présents dans le texte soumis.
+
+Si le port 3000 de l'hôte est déjà pris, changer le port hôte (`-p 3100:3000`) et les
+URL de `curl` : le port interne reste 3000.
+
+### Publication automatique
+
+`.github/workflows/docker-image.yml` construit et publie l'image sur **GitHub Container
+Registry** (`ghcr.io/aureld16/correct-ia`) à chaque push sur `main`, et sur
+déclenchement manuel (`workflow_dispatch`). Aucun secret à configurer : `GITHUB_TOKEN` suffit.
+
+Le job `quality` (lint, typecheck, tests, build) **conditionne** la publication : une
+régression sur `main` n'aboutit pas à une image publiée.
+
+Tags produits sur un push sur `main` : `latest`, `v1.0`, `main`, `sha-<court>`.
+
+**Visibilité du package.** Un premier `docker push` crée le package en `private` : les
+images ne sont alors joignables qu'authentifié. Pour le rendre public :
+<https://github.com/users/aurelien.djian/packages/container/correct-ia/settings> →
+*Change visibility* → *Public*.
+
+**Le tag `v1.0` est mutable.** Il est réécrit à chaque push sur `main`, par construction
+(`type=raw,value=v1.0,enable={{is_default_branch}}`). C'est la lecture littérale de la
+demande ; le tag n'identifie donc pas un build immuable. Le jour où le dépôt versionne
+par tags git, remplacer dans `metadata-action` la ligne du tag de version par
+`type=semver,pattern=v{{version}}`, ajouter `tags: ['v*']` au déclencheur et supprimer
+`IMAGE_VERSION_TAG` du bloc `env`. Les tags `sha-<court>` restent, eux, immuables.
+
+### Bump de version
+
+La version suit le tag git. Le `package.json` porte la même valeur que le tag.
+
+1. Mettre à jour `"version"` dans `package.json`, ouvrir une PR.
+2. Après merge, sur `main` :
+
+   ```bash
+   git tag -a v1.1 -m "correct-ia v1.1"     # tag annoté, sur le commit de main mergé
+   git push origin v1.1
+   ```
+
+3. Reporter le nouveau tag dans le workflow : `IMAGE_VERSION_TAG: v1.1` (une ligne).
+
+Le `git tag` se pose **après** le merge : sur une branche, il désignerait un commit qui
+n'est pas sur `main`.
+
+### En local, hors conteneur
+
+`output: 'standalone'` n'a rien changé au développement : `npm run dev`, `npm run build`
+et `npm start` fonctionnent comme avant. `next start` émet un avertissement
+*« does not work with "output: standalone" »* et sert malgré tout l'application sur
+`.next/` ; pour un démarrage strictement identique à celui de l'image :
+
+```bash
+npm run build && node .next/standalone/server.js
+```
+
 ## Tests et vérifications
 
 ```bash
@@ -158,6 +317,12 @@ npm run build
 Les tests sont colocalisés (`*.test.ts` / `*.test.tsx`) à côté du code qu'ils couvrent.
 Aucun test ne contacte un fournisseur réel : `fetch` est simulé, l'API est testée en
 injectant l'environnement.
+
+`Dockerfile.test.ts` (racine) couvre le `Dockerfile`, le `.dockerignore` et
+`next.config.ts` par assertions sur leur texte — sans exécuter Docker. Les garanties
+qu'il vérifie sont aussi vérifiables à la main, procédure au § *Conteneurisation* :
+`USER` non-root, absence d'`ARG`/`ENV` de secret et de `COPY .env*`, `EXPOSE 3000`,
+`CMD ["node", "server.js"]`, présence du `HEALTHCHECK`.
 
 ## Limites connues
 

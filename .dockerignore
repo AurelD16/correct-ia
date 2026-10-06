@@ -1,0 +1,27 @@
+# Dépendances — réinstallées par `npm ci` dans l'image
+node_modules
+
+# Build local — reconstruit dans l'image
+.next
+out
+next-env.d.ts
+*.tsbuildinfo
+
+# Historique et CI — sans effet sur le build, inutile dans le contexte
+.git
+.gitignore
+.github
+
+# Environnement — aucun secret ne doit entrer dans l'image
+.env
+.env.local
+.env.*.local
+
+# Tests et couverture — `*.test.ts(x)` sont CONSERVÉS : le typecheck du build les
+# couvre. Seuls les rapports de couverture sont écartés.
+coverage
+
+# Divers
+*.log
+Dockerfile
+.dockerignore

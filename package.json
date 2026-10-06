@@ -1,6 +1,6 @@
 {
   "name": "correct-ia",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "private": true,
   "description": "Application web de correction de texte via un LLM compatible OpenAI",
   "engines": {
@@ -14,7 +14,9 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "mock:llm": "node scripts/mock-llm.mjs"
+    "mock:llm": "node scripts/mock-llm.mjs",
+    "docker:build": "docker build -t correct-ia:local .",
+    "docker:run": "docker run --rm -p 3000:3000 --add-host=host.docker.internal:host-gateway -e LLM_BASE_URL=http://host.docker.internal:8787/v1 -e LLM_API_KEY=mock -e LLM_MODEL=mock-1 correct-ia:local"
   },
   "dependencies": {
     "next": "^15.5.27",
