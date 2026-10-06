@@ -160,9 +160,10 @@ docker run --rm -p 3000:3000 \
   correct-ia:local
 ```
 
-Ou, contre le faux serveur local :
+Ou, contre le faux serveur local — **qui doit tourner sur l'hôte au préalable** :
 
 ```bash
+npm run mock:llm      # dans un terminal, sans quoi l'API renvoie 502
 npm run docker:run    # containerisé, variables déjà préremplies pour le mock
 ```
 
@@ -191,7 +192,20 @@ n'est donc jamais figée au build :
 
 - aucun `ARG` de build, aucun `ENV` de clé dans le `Dockerfile` ;
 - aucun `COPY .env*` ;
-- `.dockerignore` écarte `.env`, `.env.local`, `.env.*.local` du contexte de build.
+- une règle unique et large, `**/.env*`, écarte **tout** fichier d'environnement du
+  contexte de build, à la racine comme en profondeur.
+
+Le troisième point est le plus important, et la façon dont il est écrit compte autant que
+ce qu'il dit. Une énumération — `.env`, `.env.local`, `.env.*.local` —
+ne protège que les conventions écrites : `.env.production` passait, `COPY . .` le
+copiait dans le stage `builder`, **`next build` le recopie dans `.next/standalone/`**,
+et le stage `runner` déposait le tout dans l'image finale. Pire qu'une clé écrite
+dans le dépôt : `NODE_ENV=production` la rechargeait au démarrage, si bien que le
+conteneur s'authentiflait auprès du fournisseur avec une clé qu'on ne lui avait pas
+donnée. Ne décomposez pas cette règle en une liste : `Dockerfile.test.ts` exige
+l'ensemble exact des règles d'environnement, ce qui fait échouer le test dès qu'une
+forme étroite est réintroduite.
+
 
 `Dockerfile.test.ts` garde ces trois règles par assertion. Les variables `LLM_*` se
 passent à l'exécution (`-e …`, `--env-file …`, ou secrets du Deployment) : un `docker
@@ -274,6 +288,14 @@ images ne sont alors joignables qu'authentifié. Pour le rendre public :
 <https://github.com/users/aurelien.djian/packages/container/correct-ia/settings> →
 *Change visibility* → *Public*.
 
+**⚠️ L'API n'est ni authentifiée ni limitée en débit.** `POST /api/correct` est
+préexistant tel quel, mais cette PR rend l'image déployable : un déploiement public
+expose une application qui consomme une `LLM_API_KEY` à ses frais, à quiconque peut
+l'appeler. Ne publiez pas le port 3000 directement sur Internet — placez un reverse
+proxy qui assure authentification et limitation de débit devant le conteneur. Le
+healthcheck est de toute façon interne au conteneur (`127.0.0.1`) et n'a rien à voir
+avec cette exposition.
+
 **Le tag `v1.0` est mutable.** Il est réécrit à chaque push sur `main`, par construction
 (`type=raw,value=v1.0,enable={{is_default_branch}}`). C'est la lecture littérale de la
 demande ; le tag n'identifie donc pas un build immuable. Le jour où le dépôt versionne
@@ -303,11 +325,18 @@ n'est pas sur `main`.
 `output: 'standalone'` n'a rien changé au développement : `npm run dev`, `npm run build`
 et `npm start` fonctionnent comme avant. `next start` émet un avertissement
 *« does not work with "output: standalone" »* et sert malgré tout l'application sur
-`.next/` ; pour un démarrage strictement identique à celui de l'image :
+`.next/` ; pour un démarrage **identique à celui de l'image**, il faut recopier les
+assets statiques, que le serveur autonome n'embarque pas :
 
 ```bash
-npm run build && node .next/standalone/server.js
+npm run build
+cp -r .next/static .next/standalone/.next/static
+node .next/standalone/server.js
 ```
+
+Sans cette copie, la page répond `200` mais tous les assets `/_next/static/*` répondent
+`404` : l'application s'affiche sans style ni JavaScript. Le `COPY` correspondant existe
+dans le `Dockerfile` (stage `runner`), d'où la différence.
 
 ## Tests et vérifications
 
