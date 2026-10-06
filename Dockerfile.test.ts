@@ -86,18 +86,45 @@ describe('Dockerfile', () => {
 
 describe('.dockerignore', () => {
   const ignored = instructions('.dockerignore');
+  const rules = ignored
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
 
-  it('écarte les dépendances, le build local, git et les fichiers d’environnement', () => {
+  // Règle attendue pour les fichiers d'environnement : un double astérisque
+  // (traverse les répertoires), puis le nom, puis un joker qui absorbe toute
+  // convention — `.env`, `.env.local`, `.env.production`, `config/.env`…
+  const BROAD_ENV_RULE = '**/.env*';
+
+  // Toutes les règles visant un fichier d'environnement, quelle que soit leur
+  // forme. Le « ! » d'une ré-inclusion compte comme séparateur : sinon
+  // `!.env.example` passe sous le filtre et échappe à toute assertion.
+  const envRules = rules.filter((rule) => /(^|[!/])\.env/.test(rule));
+
+  it('écarte les dépendances, le build local et git', () => {
     expect(ignored).toMatch(/^node_modules\s*$/m);
     expect(ignored).toMatch(/^\.next\s*$/m);
     expect(ignored).toMatch(/^\.git\s*$/m);
-    expect(ignored).toMatch(/^\.env\s*$/m);
-    expect(ignored).toMatch(/^\.env\.local\s*$/m);
-    expect(ignored).toMatch(/^\.env\.\*\.local\s*$/m);
   });
 
   it('conserve les tests, qui couvrent le typecheck du build', () => {
     expect(ignored).not.toMatch(/\.test\.tsx?/);
+  });
+
+  it('exclut tout fichier d’environnement par une règle large unique', () => {
+    // Exiger l'ensemble exact, et non sa seule présence : une règle étroite
+    // ajoutée en doublon donnerait une fausse assurance. C'est ce piège qui a
+    // laissé passer un `.env.production` — absent de la liste `.env`,
+    // `.env.local`, `.env.*.local` — jusqu'à l'image finale, via
+    // `.next/standalone`.
+    expect(envRules).toEqual([BROAD_ENV_RULE]);
+  });
+
+  it('ne réintroduit ni énumération de noms ni ré-inclusion', () => {
+    // Sans joker final, une règle ne couvre qu'un nom et laisse passer la
+    // convention suivante ; le préfixe « ! » réinclut explicitement.
+    expect(envRules.filter((rule) => !rule.endsWith('*'))).toEqual([]);
+    expect(envRules.filter((rule) => rule.startsWith('!'))).toEqual([]);
   });
 });
 

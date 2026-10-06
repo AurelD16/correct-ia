@@ -12,10 +12,14 @@ next-env.d.ts
 .gitignore
 .github
 
-# Environnement — aucun secret ne doit entrer dans l'image
-.env
-.env.local
-.env.*.local
+# Environnement — aucun secret ne doit entrer dans l'image.
+# Règle large et unique : `.env*` à la racine ET dans les sous-répertoires, le
+# double astérisque étant ce qui permet de descendre les répertoires.
+# Ne pas la décomposer en noms (`.env`, `.env.local`, `.env.*.local`) : toute
+# convention non énumérée — `.env.production`, `.env.test.local`, `config/.env`
+# — passerait alors dans l'image, et `next build` recopie les fichiers
+# d'environnement dans `.next/standalone/`, qui atterrit dans le stage `runner`.
+**/.env*
 
 # Tests et couverture — `*.test.ts(x)` sont CONSERVÉS : le typecheck du build les
 # couvre. Seuls les rapports de couverture sont écartés.
