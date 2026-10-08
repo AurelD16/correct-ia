@@ -1,6 +1,6 @@
 {
   "name": "correct-ia",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "private": true,
   "description": "Application web de correction de texte via un LLM compatible OpenAI",
   "engines": {

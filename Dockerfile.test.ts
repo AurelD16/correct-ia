@@ -144,3 +144,69 @@ describe('next.config.ts', () => {
     expect(read('next.config.ts')).toMatch(/output:\s*'standalone'/);
   });
 });
+
+describe('.github/workflows/docker-image.yml', () => {
+  const workflow = read('.github/workflows/docker-image.yml');
+
+  /** Entrées `tags:` du `metadata-action`, hors commentaires. */
+  const tagRules = workflow
+    .slice(workflow.indexOf('tags: |', workflow.indexOf('metadata-action')))
+    .split('\n')
+    .slice(1)
+    .map((line) => line.trim())
+    .filter((line) => line.startsWith('type='));
+
+  it('se déclenche sur un tag git `v*`', () => {
+    expect(workflow).toMatch(/^on:\s*$/m);
+    expect(workflow).toMatch(/^\s{2}push:\s*$/m);
+    expect(workflow).toMatch(/^\s{4}tags:\s*$/m);
+    expect(workflow).toMatch(/^\s{6}- 'v\*'\s*$/m);
+
+    // Un push de branche ne doit plus publier : `latest` appartient à une
+    // version nommée, pas au dernier commit arrivé sur `main`.
+    expect(workflow).not.toMatch(/^\s{4}branches:/m);
+  });
+
+  it('conditionne la publication aux contrôles de qualité', () => {
+    expect(workflow).toMatch(/^\s{2}publish:\s*$/m);
+    expect(workflow).toMatch(/^\s{4}needs:\s*quality\s*$/m);
+  });
+
+  it('publie exactement le tag de version et `latest`', () => {
+    expect(tagRules).toContain('type=raw,value=${{ steps.release.outputs.version }}');
+    expect(tagRules).toContain('type=raw,value=latest');
+    expect(tagRules).toHaveLength(3); // + `type=sha`, traçabilité
+  });
+
+  it('lit la version dans le tag git, pas dans le workflow', () => {
+    // La version est le tag : plus de constante à recopier dans ce fichier,
+    // qui était une source de désynchronisation avec `package.json`.
+    expect(workflow).not.toMatch(/IMAGE_VERSION_TAG/);
+    expect(workflow).toContain('TAG_REF#refs/tags/');
+
+    // `type=semver` refuserait `v1.01` : un zéro initial n'est pas du semver
+    // valide. L'assertion porte sur les règles effectives, pas sur le fichier,
+    // dont les commentaires mentionnent l'action écartée.
+    expect(tagRules.join('\n')).not.toMatch(/type=semver/);
+  });
+
+  it('refuse une version qui ne ressemble pas à `vX.YY`', () => {
+    expect(workflow).toMatch(/^\s*case "\$version" in$/m);
+    expect(workflow).toMatch(/^\s*v\[0-9\]\*\.\[0-9\]\*\)/m);
+    expect(workflow).toMatch(/^.*::error::/m);
+  });
+
+  it('écrit sur ghcr.io avec le seul `GITHUB_TOKEN`', () => {
+    expect(workflow).toMatch(/images:\s*ghcr\.io\/\$\{\{ github\.repository \}\}/);
+    expect(workflow).toMatch(/password:\s*\$\{\{ secrets\.GITHUB_TOKEN \}\}/);
+
+    // `packages: write` doit rester dans le job qui publie, jamais au niveau du
+    // workflow : le job `quality` n'a rien à écrire sur le registre.
+    const workflowPermissions = workflow.match(/^permissions:\n(?: {2}\S+.*\n)+/m)?.[0] ?? '';
+
+    expect(workflowPermissions).toContain('contents: read');
+    expect(workflowPermissions).not.toContain('packages: write');
+    expect(workflow.match(/^\s+packages:\s*write\s*$/gm)).toHaveLength(1);
+    expect(workflow.indexOf('packages: write')).toBeGreaterThan(workflow.indexOf('publish:'));
+  });
+});

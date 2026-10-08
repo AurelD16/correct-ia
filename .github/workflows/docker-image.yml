@@ -1,30 +1,28 @@
-name: Image Docker
+name: Release
 
-# Construit et publie l'image de production sur le GitHub Container Registry à
-# chaque push sur `main`, et à la demande. Le registre est lié au dépôt : aucun
+# Publie l'image de production sur le GitHub Container Registry à chaque push
+# d'un tag git `v*` : le tag lui-même (ex. `v1.01`) et `latest`. Le tag est posé
+# sur un commit déjà mergé dans `main`. Le registre est lié au dépôt : aucun
 # secret supplémentaire n'est requis, `GITHUB_TOKEN` suffit.
 on:
   push:
-    branches: [main]
+    tags:
+      - 'v*'
   workflow_dispatch:
-
-env:
-  # Tag de version mutable de l'image. Bump en une ligne : c'est ici que se
-  # trouve la version publiée, pas dans le `metadata-action`.
-  #
-  # Attention : ce tag est réécrit à chaque push sur `main`. Le jour où le dépôt
-  # versionne par tags git, remplacer dans `metadata-action` la ligne
-  # `type=raw,value=${{ env.IMAGE_VERSION_TAG }},enable=...` par
-  # `type=semver,pattern=v{{version}}` et déclencher le workflow sur
-  # `push: tags`.
-  IMAGE_VERSION_TAG: v1.0
+    inputs:
+      version:
+        description: 'Version à publier, ex. v1.01'
+        required: true
+        type: string
 
 permissions:
   contents: read
 
 concurrency:
-  group: docker-image-${{ github.ref }}
-  cancel-in-progress: true
+  # Jamais d'annulation : une publication commencée doit aller jusqu'au bout,
+  # et deux releases concurrentes sur le même registre se marchent dessus.
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   quality:
@@ -68,18 +66,41 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # La version EST le tag git, lu tel quel : `v1.01` n'est pas du semver
+      # valide (zéro initial), donc `type=semver` de `metadata-action` le
+      # refuserait. Le garde refuse tout tag qui ne ressemble pas à `vX.YY`
+      # plutôt que de publier un `latest` sous un nom arbitraire.
+      - name: Version de release
+        id: release
+        env:
+          TAG_REF: ${{ github.ref }}
+          MANUAL_VERSION: ${{ inputs.version }}
+        run: |
+          version="${TAG_REF#refs/tags/}"
+          if [ "$version" = "$TAG_REF" ]; then
+            version="$MANUAL_VERSION"
+          fi
+          case "$version" in
+            v[0-9]*.[0-9]*) ;;
+            *)
+              echo "::error::version « $version » invalide : le tag doit ressembler à v1.01"
+              exit 1
+              ;;
+          esac
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
       - id: meta
         uses: docker/metadata-action@v5
         with:
           images: ghcr.io/${{ github.repository }}
           tags: |
-            type=ref,event=branch
-            type=raw,value=latest,enable={{is_default_branch}}
-            type=raw,value=${{ env.IMAGE_VERSION_TAG }},enable={{is_default_branch}}
+            type=raw,value=${{ steps.release.outputs.version }}
+            type=raw,value=latest
             type=sha,format=short
           labels: |
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
             org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ steps.release.outputs.version }}
 
       - uses: docker/build-push-action@v6
         with:
