@@ -1,0 +1,113 @@
+name: Release
+
+# Publie l'image de production sur le GitHub Container Registry à chaque push
+# d'un tag git `v*` : le tag lui-même (ex. `v1.01`) et `latest`. Le tag est posé
+# sur un commit déjà mergé dans `main`. Le registre est lié au dépôt : aucun
+# secret supplémentaire n'est requis, `GITHUB_TOKEN` suffit.
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version à publier, ex. v1.01'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  # Jamais d'annulation : une publication commencée doit aller jusqu'au bout,
+  # et deux releases concurrentes sur le même registre se marchent dessus.
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  quality:
+    name: Qualité
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - run: npm run lint
+
+      - run: npm run typecheck
+
+      - run: npm test
+
+      - run: npm run build
+
+  publish:
+    name: Publication
+    needs: quality
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-qemu-action@v3
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # La version EST le tag git, lu tel quel : `v1.01` n'est pas du semver
+      # valide (zéro initial), donc `type=semver` de `metadata-action` le
+      # refuserait. Le garde refuse tout tag qui ne ressemble pas à `vX.YY`
+      # plutôt que de publier un `latest` sous un nom arbitraire.
+      - name: Version de release
+        id: release
+        env:
+          TAG_REF: ${{ github.ref }}
+          MANUAL_VERSION: ${{ inputs.version }}
+        run: |
+          version="${TAG_REF#refs/tags/}"
+          if [ "$version" = "$TAG_REF" ]; then
+            version="$MANUAL_VERSION"
+          fi
+          case "$version" in
+            v[0-9]*.[0-9]*) ;;
+            *)
+              echo "::error::version « $version » invalide : le tag doit ressembler à v1.01"
+              exit 1
+              ;;
+          esac
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=raw,value=${{ steps.release.outputs.version }}
+            type=raw,value=latest
+            type=sha,format=short
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ steps.release.outputs.version }}
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          platforms: linux/amd64,linux/arm64
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

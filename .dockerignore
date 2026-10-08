@@ -1,0 +1,37 @@
+# Dépendances — réinstallées par `npm ci` dans l'image
+node_modules
+
+# Build local — reconstruit dans l'image
+.next
+out
+next-env.d.ts
+*.tsbuildinfo
+
+# Historique et CI — sans effet sur le build, inutile dans le contexte
+.git
+.gitignore
+.github
+
+# Environnement — aucun secret ne doit entrer dans l'image.
+# Règle large et unique : `.env*` à la racine ET dans les sous-répertoires, le
+# double astérisque étant ce qui permet de descendre les répertoires.
+# Ne pas la décomposer en noms (`.env`, `.env.local`, `.env.*.local`) : toute
+# convention non énumérée — `.env.production`, `.env.test.local`, `config/.env`
+# — passerait alors dans l'image, et `next build` recopie les fichiers
+# d'environnement dans `.next/standalone/`, qui atterrit dans le stage `runner`.
+**/.env*
+
+# Jetons npm et autres identifiants — défense en profondeur, hors `.env*`.
+# Un `_authToken` malformé ferait échouer `npm ci` ou `npm run build` dans
+# l'image (ERR_INVALID_AUTH) ; le jeton lui-même n'atteindrait pas le runner.
+.npmrc
+.netrc
+
+# Tests et couverture — `*.test.ts(x)` sont CONSERVÉS : le typecheck du build les
+# couvre. Seuls les rapports de couverture sont écartés.
+coverage
+
+# Divers
+*.log
+Dockerfile
+.dockerignore
