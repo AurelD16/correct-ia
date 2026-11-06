@@ -109,12 +109,12 @@ npm run docker:run
 `main` publishes that version under **two tags** — the version itself, and `latest`:
 
 ```bash
-git tag -a v1.01 -m "correct-ia v1.01"
-git push origin v1.01
+git tag -a v1.0.1 -m "correct-ia v1.0.1"
+git push origin v1.0.1
 ```
 
 ```
-ghcr.io/aureld16/correct-ia:v1.01
+ghcr.io/aureld16/correct-ia:v1.0.1
 ghcr.io/aureld16/correct-ia:latest
 ```
 
@@ -123,7 +123,7 @@ commit. Lint, typecheck, tests and build run first and **gate** the publication:
 regression never reaches a published tag. No secret has to be configured, `GITHUB_TOKEN`
 is enough, and *Run workflow* replays a release by hand.
 
-Bump `"version"` in `package.json` in the same change as the tag (`v1.01` ↔ `1.0.1`).
+Bump `"version"` in `package.json` (major.minor.patch) in the same change as the tag.
 
 **Package visibility.** The first `docker push` creates the package as `private`, so
 `docker pull` needs a `docker login ghcr.io` until you change it:
