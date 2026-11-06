@@ -1,0 +1,26 @@
+# Démarrage rapide de l'image correct-ia — un `docker compose up` au lieu d'un
+# long `docker run`.
+#
+# L'image est autonome et ne contient aucun secret : les variables `LLM_*` sont
+# lues au démarrage, côté serveur (`lib/env.ts`), et fournies ici à l'exécution.
+#
+#   docker compose up        # tire ghcr.io/aureld16/correct-ia:latest
+#
+# Renseignez `LLM_API_KEY` (et éventuellement `LLM_BASE_URL`, `LLM_MODEL`) soit
+# dans votre shell, soit dans un fichier `.env` placé à côté de ce fichier :
+# Docker Compose le lit automatiquement pour l'interpolation `${…}`.
+#
+#   LLM_API_KEY=sk-… docker compose up
+#
+# Sans `LLM_API_KEY`, l'interface se charge mais l'API répond 503 « service non
+# configuré ». Voir la section « Running with Docker » du README.
+
+services:
+  correct-ia:
+    image: ghcr.io/aureld16/correct-ia:latest
+    ports:
+      - "3000:3000"
+    environment:
+      LLM_BASE_URL: ${LLM_BASE_URL:-https://api.openai.com/v1}
+      LLM_API_KEY: ${LLM_API_KEY:-}
+      LLM_MODEL: ${LLM_MODEL:-gpt-4o-mini}
