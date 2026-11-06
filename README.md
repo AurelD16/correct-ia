@@ -13,6 +13,9 @@ The model returns text *excerpts*, never positions: the server locates them and 
 the corrected text locally, so the highlighted text and the error list can never disagree.
 The full specification is in [`docs/spec-v1.md`](docs/spec-v1.md).
 
+**Docker one-liner:** already have Docker? `docker compose up` is all it takes to get
+the app running — see [Running with Docker → Docker Compose](#docker-compose).
+
 ## Requirements
 
 Node.js **≥ 20**, or Docker.
@@ -59,6 +62,22 @@ An incomplete configuration does not stop the server: the UI still loads and the
 answers `503 service not configured`.
 
 ## Running with Docker
+
+### Docker Compose
+
+The quickest start. From the repo root:
+
+```bash
+LLM_API_KEY=sk-... docker compose up
+```
+
+`docker-compose.yaml` pulls `ghcr.io/aureld16/correct-ia:latest`, exposes port `3000`
+and passes the `LLM_*` variables at run time. Set them either in your shell or in a
+local `.env` file next to the compose file — Docker Compose reads it automatically for
+the `${…}` substitution. Without `LLM_API_KEY` the UI loads but the API answers
+`503 service not configured`.
+
+### `docker run`
 
 ```bash
 docker pull ghcr.io/aureld16/correct-ia:latest
